@@ -31,7 +31,7 @@ defmodule LibSQL.Connection do
       iex> connect(mode: :local, path: "path/to/db")
       {:ok, connection}
 
-      iex> connect(mode: :remote, url: "http://example.com", token: "token")
+      iex> connect(mode: :remote_replica, path: "path/to/db", url: "http://example.com", token: "token")
       {:ok, connection}
 
   """
