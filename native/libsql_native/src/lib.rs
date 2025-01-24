@@ -1,9 +1,8 @@
 use core::result;
-use errors::{TX_CONSUMED, TX_NOT_AVAILABLE};
+use errors::{CONN_CONSUMED, CONN_NOT_AVAILABLE, TX_CONSUMED, TX_NOT_AVAILABLE};
 use libsql::Builder;
 use rustler::{
-    Atom, Env, LocalPid, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource, ResourceArc,
-    Term,
+    Env, LocalPid, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource, ResourceArc, Term,
 };
 use tokio::sync::Mutex;
 
@@ -18,11 +17,13 @@ mod atoms {
 }
 
 mod errors {
+    pub const CONN_NOT_AVAILABLE: &str = "connection not available";
+    pub const CONN_CONSUMED: &str = "transaction already consumed";
     pub const TX_NOT_AVAILABLE: &str = "transaction not available";
     pub const TX_CONSUMED: &str = "transaction already consumed";
 }
 
-struct ConnectionRef(libsql::Connection);
+struct ConnectionRef(Mutex<Option<libsql::Connection>>);
 struct TransactionRef(Mutex<Option<libsql::Transaction>>);
 struct StatementRef(Mutex<libsql::Statement>);
 
@@ -98,18 +99,18 @@ fn open(mode: DatabaseOpenMode) -> result::Result<Connection, String> {
         DatabaseOpenMode::LocalReplica(path) => {
             task::block_on(Builder::new_local_replica(path).build())
         }
-        DatabaseOpenMode::Remote(host, port) => {
-            task::block_on(Builder::new_remote(host, port).build())
+        DatabaseOpenMode::Remote(url, token) => {
+            task::block_on(Builder::new_remote(url, token).build())
         }
-        DatabaseOpenMode::RemoteReplica(host, port, replica) => {
-            task::block_on(Builder::new_remote_replica(host, port, replica).build())
+        DatabaseOpenMode::RemoteReplica(path, url, token) => {
+            task::block_on(Builder::new_remote_replica(path, url, token).build())
         }
     };
 
     match result {
         Ok(database) => match database.connect() {
             Ok(conn) => Ok(Connection {
-                conn_ref: ResourceArc::new(ConnectionRef(conn)),
+                conn_ref: ResourceArc::new(ConnectionRef(Mutex::new(Some(conn)))),
             }),
             Err(error) => return Err(error.to_string()),
         },
@@ -126,17 +127,28 @@ fn execute(
 ) -> result::Result<(), String> {
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
-        let result = resource.0.execute(&stmt, params).await;
 
-        let out = match result {
-            Ok(num_rows) => Ok(Result {
-                num_rows: Some(num_rows.try_into().unwrap()),
-                rows: None,
-                columns: None,
-                last_insert_id: Some(resource.0.last_insert_rowid()),
-            }),
-            Err(err) => Err(err.to_string()),
-        };
+        let out: result::Result<Result, String> = async {
+            let lock = resource.0.lock().await;
+
+            let connection = match lock.as_ref() {
+                Some(tx) => tx,
+                None => return Err(CONN_NOT_AVAILABLE.to_string()),
+            };
+
+            let result = connection.execute(&stmt, params).await;
+
+            match result {
+                Ok(num_rows) => Ok(Result {
+                    num_rows: Some(num_rows.try_into().unwrap()),
+                    rows: None,
+                    columns: None,
+                    last_insert_id: Some(connection.last_insert_rowid()),
+                }),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        .await;
 
         local_env
             .send_and_clear(&pid, |_| out)
@@ -157,8 +169,14 @@ fn query(
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<Result, String> = async {
-            let mut rows = resource
-                .0
+            let lock = resource.0.lock().await;
+
+            let transaction = match lock.as_ref() {
+                Some(tx) => tx,
+                None => return Err(CONN_NOT_AVAILABLE.to_string()),
+            };
+
+            let mut rows = transaction
                 .query(&stmt, params)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -183,11 +201,13 @@ fn query(
                 data.push(row_data);
             }
 
+            let last_insert_id = transaction.last_insert_rowid();
+
             Ok(Result {
                 num_rows: Some(data.len()),
                 rows: Some(data),
                 columns: Some(columns),
-                last_insert_id: Some(resource.0.last_insert_rowid()),
+                last_insert_id: Some(last_insert_id),
             })
         }
         .await;
@@ -209,21 +229,27 @@ fn transaction(
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
-        let result: result::Result<Transaction, String> = async {
-            let transaction = resource
-                .0
-                .transaction_with_behavior(behaviour.into())
-                .await
-                .map_err(|err| err.to_string())?;
+        let out: result::Result<Transaction, String> = async {
+            let lock = resource.0.lock().await;
 
-            Ok(Transaction {
-                tx_ref: ResourceArc::new(TransactionRef(Mutex::new(Some(transaction)))),
-            })
+            let connection = match lock.as_ref() {
+                Some(tx) => tx,
+                None => return Err(CONN_NOT_AVAILABLE.to_string()),
+            };
+
+            let result = connection.transaction_with_behavior(behaviour.into()).await;
+
+            match result {
+                Ok(tx) => Ok(Transaction {
+                    tx_ref: ResourceArc::new(TransactionRef(Mutex::new(Some(tx)))),
+                }),
+                Err(err) => Err(err.to_string()),
+            }
         }
         .await;
 
         local_env
-            .send_and_clear(&pid, |_| result)
+            .send_and_clear(&pid, |_| out)
             .expect("to send message");
     });
 
@@ -429,17 +455,27 @@ fn prepare(
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
-        let result: result::Result<Statement, String> = async {
-            let statement = resource.0.prepare(&stmt).await.map_err(|e| e.to_string())?;
+        let out: result::Result<Statement, String> = async {
+            let lock = resource.0.lock().await;
 
-            Ok(Statement {
-                stmt_ref: ResourceArc::new(StatementRef(Mutex::new(statement))),
-            })
+            let connection = match lock.as_ref() {
+                Some(tx) => tx,
+                None => return Err(CONN_NOT_AVAILABLE.to_string()),
+            };
+
+            let result = connection.prepare(&stmt).await;
+
+            match result {
+                Ok(statement) => Ok(Statement {
+                    stmt_ref: ResourceArc::new(StatementRef(Mutex::new(statement))),
+                }),
+                Err(err) => Err(err.to_string()),
+            }
         }
         .await;
 
         local_env
-            .send_and_clear(&pid, |_| result)
+            .send_and_clear(&pid, |_| out)
             .expect("to send message");
     });
 
@@ -532,9 +568,27 @@ fn stmt_query(
 }
 
 #[rustler::nif]
-fn close(conn: ResourceArc<ConnectionRef>) -> Atom {
-    drop(conn);
-    atoms::ok()
+fn close(conn: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let result = async {
+            let mut conn = conn.0.lock().await;
+            if let Some(connection) = conn.take() {
+                drop(connection);
+                Ok(())
+            } else {
+                Err(CONN_CONSUMED.to_string())
+            }
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
 }
 
 rustler::init!("Elixir.LibSQL.Native", load = load);

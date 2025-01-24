@@ -37,6 +37,10 @@ defmodule LibSQL.Macros do
         )
       end
 
+      def unquote(func)(%LibSQL.Native.Connection{} = conn, statement) do
+        unquote(func)(conn, statement, [], unquote(default_timeout))
+      end
+
       def unquote(func)(%LibSQL.Native.Connection{} = conn, statement, params) do
         unquote(func)(conn, statement, params, unquote(default_timeout))
       end
@@ -47,6 +51,10 @@ defmodule LibSQL.Macros do
           LibSQL.Native.unquote(:"#{native_prefix}")(conn.conn_ref, statement, params, self()),
           timeout
         )
+      end
+
+      def unquote(func)(%LibSQL.Native.Transaction{} = tx, statement) do
+        unquote(func)(tx, statement, [], unquote(default_timeout))
       end
 
       def unquote(func)(%LibSQL.Native.Transaction{} = tx, statement, params) do

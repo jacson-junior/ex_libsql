@@ -21,7 +21,9 @@ defmodule LibSQL.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:rustler, "~> 0.36.0"}
+      {:rustler, "~> 0.36.0"},
+      {:db_connection, "~> 2.0"},
+      {:mock, "~> 0.3.0", only: :test}
     ]
   end
 end
