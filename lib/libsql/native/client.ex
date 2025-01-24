@@ -34,6 +34,10 @@ defmodule LibSQL.Native.Client do
     await_response(LibSQL.Native.rollback(tx.tx_ref, self()), timeout)
   end
 
+  def transaction_status(%Connection{} = conn, timeout \\ @default_timeout) do
+    await_response(LibSQL.Native.tx_status(conn.conn_ref, self()), timeout)
+  end
+
   def prepare(conn, statement) do
     prepare(conn, statement, @default_timeout)
   end

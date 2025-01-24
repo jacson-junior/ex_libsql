@@ -2,7 +2,8 @@ use core::result;
 use errors::{CONN_CONSUMED, CONN_NOT_AVAILABLE, TX_CONSUMED, TX_NOT_AVAILABLE};
 use libsql::Builder;
 use rustler::{
-    Env, LocalPid, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource, ResourceArc, Term,
+    Atom, Env, LocalPid, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource, ResourceArc,
+    Term,
 };
 use tokio::sync::Mutex;
 
@@ -13,6 +14,9 @@ mod atoms {
     rustler::atoms! {
         ok,
         error,
+
+        idle,
+        transaction,
     }
 }
 
@@ -302,6 +306,34 @@ fn rollback(resource: ResourceArc<TransactionRef>, pid: LocalPid) -> result::Res
 
         local_env
             .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
+}
+
+#[rustler::nif]
+fn tx_status(resource: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let out: result::Result<Atom, String> = async {
+            let lock = resource.0.lock().await;
+
+            let connection = match lock.as_ref() {
+                Some(tx) => tx,
+                None => return Err(CONN_NOT_AVAILABLE.to_string()),
+            };
+
+            match connection.is_autocommit() {
+                true => Ok(atoms::idle()),
+                false => Ok(atoms::transaction()),
+            }
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| out)
             .expect("to send message");
     });
 

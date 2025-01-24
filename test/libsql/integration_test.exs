@@ -11,18 +11,22 @@ defmodule LibSQL.IntegrationTest do
     {:ok, conn2} =
       Connection.connect(mode: :memory)
 
+    {status, conn1} = Connection.handle_status([], conn1)
+    assert status == :idle
     {:ok, _result, conn1} = Connection.handle_begin([], conn1)
-    assert conn1.tx != nil
-    # query = %Query{statement: "create table foo(id integer, val integer)"}
-    # {:ok, _query, _result, conn1} = Connection.handle_execute(query, [], [], conn1)
+    {status, conn1} = Connection.handle_status([], conn1)
+    assert status == :transaction
     {:ok, _result, conn1} = Connection.handle_rollback([], conn1)
-    assert conn1.tx == nil
+    {status, conn1} = Connection.handle_status([], conn1)
+    assert status == :idle
 
+    {status, conn2} = Connection.handle_status([], conn2)
+    assert status == :idle
     {:ok, _result, conn2} = Connection.handle_begin([], conn2)
-    assert conn2.tx != nil
-    # query = %Query{statement: "create table foo(id integer, val integer)"}
-    # {:ok, _query, _result, conn2} = Connection.handle_execute(query, [], [], conn2)
+    {status, conn2} = Connection.handle_status([], conn2)
+    assert status == :transaction
     {:ok, _result, conn2} = Connection.handle_rollback([], conn2)
-    assert conn2.tx == nil
+    {status, conn2} = Connection.handle_status([], conn2)
+    assert status == :idle
   end
 end

@@ -17,4 +17,5 @@ defmodule LibSQL.Native do
   def tx_execute(_tx, _sql, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def tx_query(_tx, _sql, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def tx_prepare(_tx, _sql, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def tx_status(_conn, _pid), do: :erlang.nif_error(:nif_not_loaded)
 end

@@ -124,7 +124,7 @@ defmodule LibSQL.Connection do
              }} ->
               {:ok,
                Result.new(
-                 command: :savepoint,
+                 command: :begin,
                  num_rows: num_rows,
                  rows: rows,
                  columns: columns
@@ -187,12 +187,14 @@ defmodule LibSQL.Connection do
   end
 
   @impl true
-  def handle_status(_opts, %{tx: tx} = state) when is_nil(tx) do
-    {:idle, state}
-  end
+  def handle_status(_opts, %{conn: conn} = state) do
+    case Client.transaction_status(conn) do
+      {:ok, status} ->
+        {status, state}
 
-  def handle_status(_opts, %{tx: _tx} = state) do
-    {:transaction, state}
+      {:error, reason} ->
+        {:disconnect, LibSQL.Error.exception(message: reason), state}
+    end
   end
 
   @impl true
