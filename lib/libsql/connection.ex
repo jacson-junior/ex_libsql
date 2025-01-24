@@ -1,10 +1,12 @@
 defmodule LibSQL.Connection do
-  alias LibSQL.Native.Client
   use DBConnection
+
+  alias LibSQL.Native.Client
+  alias LibSQL.Result
 
   require Logger
 
-  defstruct conn: nil, status: :idle
+  defstruct conn: nil, tx: nil, status: :idle, default_transaction_mode: :deferred
 
   @doc """
   Connects to a LibSQL database with the specified options.
@@ -92,19 +94,105 @@ defmodule LibSQL.Connection do
   end
 
   @impl true
-  def handle_begin(_opts, _state) do
+  def handle_begin(opts, %{tx: tx, conn: conn} = state) do
+    mode = Keyword.get(opts, :mode, state.default_transaction_mode)
+
+    if mode in [:deferred, :immediate, :exclusive, :read_only] do
+      case tx do
+        nil ->
+          case Client.begin(conn, mode) do
+            {:ok, new_tx} ->
+              {:ok,
+               Result.new(
+                 command: :begin,
+                 num_rows: 0,
+                 rows: [],
+                 columns: []
+               ), %{state | tx: new_tx}}
+
+            {:error, reason} ->
+              {:disconnect, LibSQL.Error.exception(message: reason), state}
+          end
+
+        tx ->
+          case Client.execute(tx, "SAVEPOINT ex_libsql_savepoint") do
+            {:ok,
+             %{
+               num_rows: num_rows,
+               rows: rows,
+               columns: columns
+             }} ->
+              {:ok,
+               Result.new(
+                 command: :savepoint,
+                 num_rows: num_rows,
+                 rows: rows,
+                 columns: columns
+               ), state}
+
+            {:error, reason} ->
+              {:disconnect, LibSQL.Error.exception(message: reason), state}
+          end
+      end
+    else
+      {:disconnect, LibSQL.Error.exception(message: "invalid transaction mode: #{inspect(mode)}"),
+       state}
+    end
   end
 
   @impl true
-  def handle_commit(_opts, _state) do
+  def handle_commit(_opts, %{tx: tx} = state) do
+    case tx do
+      nil ->
+        {:disconnect, LibSQL.Error.exception(message: "no transaction to commit"), state}
+
+      tx ->
+        case Client.commit(tx) do
+          {:ok, _} ->
+            {:ok,
+             Result.new(
+               command: :commit,
+               num_rows: 0,
+               rows: [],
+               columns: []
+             ), %{state | tx: nil}}
+
+          {:error, reason} ->
+            {:disconnect, LibSQL.Error.exception(message: reason), state}
+        end
+    end
   end
 
   @impl true
-  def handle_rollback(_opts, _state) do
+  def handle_rollback(_opts, %{tx: tx} = state) do
+    case tx do
+      nil ->
+        {:disconnect, LibSQL.Error.exception(message: "no transaction to rollback"), state}
+
+      tx ->
+        case Client.rollback(tx) do
+          {:ok, _} ->
+            {:ok,
+             Result.new(
+               command: :rollback,
+               num_rows: 0,
+               rows: [],
+               columns: []
+             ), %{state | tx: nil}}
+
+          {:error, reason} ->
+            {:disconnect, LibSQL.Error.exception(message: reason), state}
+        end
+    end
   end
 
   @impl true
-  def handle_status(_opts, _state) do
+  def handle_status(_opts, %{tx: tx} = state) when is_nil(tx) do
+    {:idle, state}
+  end
+
+  def handle_status(_opts, %{tx: _tx} = state) do
+    {:transaction, state}
   end
 
   @impl true
@@ -113,7 +201,7 @@ defmodule LibSQL.Connection do
   end
 
   def checkout(%__MODULE__{status: :busy} = state) do
-    {:disconnect, "database is busy", state}
+    {:disconnect, LibSQL.Error.exception(message: "database is busy"), state}
   end
 
   @impl true

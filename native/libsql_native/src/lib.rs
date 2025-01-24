@@ -221,7 +221,7 @@ fn query(
 }
 
 #[rustler::nif]
-fn transaction(
+fn begin(
     resource: ResourceArc<ConnectionRef>,
     behaviour: TransactionBehavior,
     pid: LocalPid,

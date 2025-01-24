@@ -22,8 +22,8 @@ defmodule LibSQL.Native.Client do
   define_operations(:execute, @default_timeout)
   define_operations(:query, @default_timeout)
 
-  def transaction(%Connection{} = conn, behaviour \\ :deferred, timeout \\ @default_timeout) do
-    await_response(LibSQL.Native.transaction(conn.conn_ref, behaviour, self()), timeout)
+  def begin(%Connection{} = conn, behaviour \\ :deferred, timeout \\ @default_timeout) do
+    await_response(LibSQL.Native.begin(conn.conn_ref, behaviour, self()), timeout)
   end
 
   def commit(%Transaction{} = tx, timeout \\ @default_timeout) do
