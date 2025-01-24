@@ -1,12 +1,15 @@
 use core::result;
 use errors::{CONN_CONSUMED, CONN_NOT_AVAILABLE, TX_CONSUMED, TX_NOT_AVAILABLE};
 use libsql::Builder;
+use open::LocalFlags;
 use rustler::{
-    Atom, Env, LocalPid, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource, ResourceArc,
-    Term,
+    Atom, Env, LocalPid, NifRecord, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource,
+    ResourceArc, Term,
 };
 use tokio::sync::Mutex;
 
+pub mod duration;
+pub mod open;
 pub mod task;
 pub mod value;
 
@@ -37,10 +40,10 @@ impl Resource for StatementRef {}
 
 #[derive(NifTaggedEnum)]
 pub enum DatabaseOpenMode {
-    Local(String),
-    LocalReplica(String),
+    Local(String, Option<LocalFlags>),
+    LocalReplica(String, Option<LocalFlags>),
     Remote(String, String),
-    RemoteReplica(String, String, String),
+    RemoteReplica(String, String, String, Option<RemoteOpts>),
 }
 
 #[derive(NifUnitEnum, Default)]
@@ -61,6 +64,13 @@ impl From<TransactionBehavior> for libsql::TransactionBehavior {
             TransactionBehavior::ReadOnly => libsql::TransactionBehavior::ReadOnly,
         }
     }
+}
+
+#[derive(NifRecord, Clone)]
+#[tag = "remote_opts"]
+pub struct RemoteOpts {
+    read_your_writes: Option<bool>,
+    sync_interval: Option<duration::Duration>,
 }
 
 #[derive(NifStruct, Clone, Debug)]
@@ -99,16 +109,33 @@ fn load(env: Env, _: Term) -> bool {
 #[rustler::nif]
 fn open(mode: DatabaseOpenMode) -> result::Result<Connection, String> {
     let result = match mode {
-        DatabaseOpenMode::Local(path) => task::block_on(Builder::new_local(path).build()),
-        DatabaseOpenMode::LocalReplica(path) => {
-            task::block_on(Builder::new_local_replica(path).build())
-        }
+        DatabaseOpenMode::Local(path, flags) => task::block_on(
+            Builder::new_local(path)
+                .flags(flags.unwrap_or_default().into())
+                .build(),
+        ),
+        DatabaseOpenMode::LocalReplica(path, flags) => task::block_on(
+            Builder::new_local_replica(path)
+                .flags(flags.unwrap_or_default().into())
+                .build(),
+        ),
         DatabaseOpenMode::Remote(url, token) => {
             task::block_on(Builder::new_remote(url, token).build())
         }
-        DatabaseOpenMode::RemoteReplica(path, url, token) => {
-            task::block_on(Builder::new_remote_replica(path, url, token).build())
-        }
+        DatabaseOpenMode::RemoteReplica(path, url, token, opts) => task::block_on({
+            let mut builder = Builder::new_remote_replica(path, url, token);
+
+            if let Some(opts) = opts {
+                if let Some(ryw) = opts.read_your_writes {
+                    builder = builder.read_your_writes(ryw);
+                }
+                if let Some(si) = opts.sync_interval {
+                    builder = builder.sync_interval(si.into());
+                }
+            }
+
+            builder.build()
+        }),
     };
 
     match result {

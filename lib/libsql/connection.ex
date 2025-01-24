@@ -17,6 +17,11 @@ defmodule LibSQL.Connection do
     * `:path` - Required for :local, :local_replica, and :remote_replica modes
     * `:url` - Required for :remote and :remote_replica modes
     * `:token` - Required for :remote and :remote_replica modes
+    * `:flags` - Optional for :memory, :local and :local_replica [:read_only | :read_write | :create]
+    * `:remote_replica_opts` - Optional for :remote_replica mode. Additional options for the remote replica connection
+      * `:read_your_writes` - Optional [default: true]. Whether to read your own writes
+      * `:sync_interval` - Optional. Enables syncing the replica with the primary at the specified interval in milliseconds
+    * `:transaction_mode` - Optional [default: :deferred]. The transaction mode (:deferred, :immediate, :exclusive, :read_only)
 
   ## Examples
 
@@ -38,16 +43,16 @@ defmodule LibSQL.Connection do
           {:error, ":mode option is required"}
 
         :memory ->
-          Client.connect({:local, ":memory:"})
+          Client.connect({:local, ":memory:", Keyword.get(opts, :flags)})
 
         :local ->
           with {:ok, path} <- require_opt(opts, :path, :local) do
-            Client.connect({:local, path})
+            Client.connect({:local, path, Keyword.get(opts, :flags)})
           end
 
         :local_replica ->
           with {:ok, path} <- require_opt(opts, :path, :local_replica) do
-            Client.connect({:local_replica, path})
+            Client.connect({:local_replica, path, Keyword.get(opts, :flags)})
           end
 
         :remote ->
@@ -60,7 +65,9 @@ defmodule LibSQL.Connection do
           with {:ok, path} <- require_opt(opts, :path, :remote_replica),
                {:ok, url} <- require_opt(opts, :url, :remote_replica),
                {:ok, token} <- require_opt(opts, :token, :remote_replica) do
-            Client.connect({:remote_replica, path, url, token})
+            Client.connect(
+              {:remote_replica, path, url, token, Keyword.get(opts, :remote_replica_opts)}
+            )
           end
 
         mode ->
@@ -95,7 +102,7 @@ defmodule LibSQL.Connection do
 
   @impl true
   def handle_begin(opts, %{tx: tx, conn: conn} = state) do
-    mode = Keyword.get(opts, :mode, state.default_transaction_mode)
+    mode = Keyword.get(opts, :transaction_mode, state.default_transaction_mode)
 
     if mode in [:deferred, :immediate, :exclusive, :read_only] do
       case tx do
