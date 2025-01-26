@@ -1,4 +1,4 @@
-defmodule LibSQL.Result do
+defmodule ExLibSQL.Result do
   @moduledoc """
   The database results.
   """
@@ -23,7 +23,7 @@ defmodule LibSQL.Result do
 end
 
 if Code.ensure_loaded?(Table.Reader) do
-  defimpl Table.Reader, for: LibSQL.Result do
+  defimpl Table.Reader, for: ExLibSQL.Result do
     def init(%{columns: columns}) when columns in [nil, []] do
       {:rows, %{columns: []}, []}
     end

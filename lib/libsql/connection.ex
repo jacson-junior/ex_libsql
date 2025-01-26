@@ -1,18 +1,18 @@
-defmodule LibSQL.Connection do
+defmodule ExLibSQL.Connection do
   use DBConnection
 
-  alias LibSQL.Native.Statement
-  alias LibSQL.Error
-  alias LibSQL.Query
-  alias LibSQL.Native.Client
-  alias LibSQL.Result
+  alias ExLibSQL.Native.Statement
+  alias ExLibSQL.Error
+  alias ExLibSQL.Query
+  alias ExLibSQL.Native.Client
+  alias ExLibSQL.Result
 
   require Logger
 
   defstruct conn: nil, tx: nil, status: :idle, default_transaction_mode: :deferred, chunk_size: 50
 
   @doc """
-  Connects to a LibSQL database with the specified options.
+  Connects to a ExLibSQL database with the specified options.
 
   ## Options
 
@@ -121,7 +121,7 @@ defmodule LibSQL.Connection do
                ), %{state | tx: new_tx}}
 
             {:error, reason} ->
-              {:disconnect, LibSQL.Error.exception(message: reason), state}
+              {:disconnect, ExLibSQL.Error.exception(message: reason), state}
           end
 
         tx ->
@@ -141,12 +141,12 @@ defmodule LibSQL.Connection do
                ), state}
 
             {:error, reason} ->
-              {:disconnect, LibSQL.Error.exception(message: reason), state}
+              {:disconnect, ExLibSQL.Error.exception(message: reason), state}
           end
       end
     else
-      {:disconnect, LibSQL.Error.exception(message: "invalid transaction mode: #{inspect(mode)}"),
-       state}
+      {:disconnect,
+       ExLibSQL.Error.exception(message: "invalid transaction mode: #{inspect(mode)}"), state}
     end
   end
 
@@ -154,7 +154,7 @@ defmodule LibSQL.Connection do
   def handle_commit(_opts, %{tx: tx} = state) do
     case tx do
       nil ->
-        {:disconnect, LibSQL.Error.exception(message: "no transaction to commit"), state}
+        {:disconnect, ExLibSQL.Error.exception(message: "no transaction to commit"), state}
 
       tx ->
         case Client.commit(tx) do
@@ -168,7 +168,7 @@ defmodule LibSQL.Connection do
              ), %{state | tx: nil}}
 
           {:error, reason} ->
-            {:disconnect, LibSQL.Error.exception(message: reason), state}
+            {:disconnect, ExLibSQL.Error.exception(message: reason), state}
         end
     end
   end
@@ -177,7 +177,7 @@ defmodule LibSQL.Connection do
   def handle_rollback(_opts, %{tx: tx} = state) do
     case tx do
       nil ->
-        {:disconnect, LibSQL.Error.exception(message: "no transaction to rollback"), state}
+        {:disconnect, ExLibSQL.Error.exception(message: "no transaction to rollback"), state}
 
       tx ->
         case Client.rollback(tx) do
@@ -191,7 +191,7 @@ defmodule LibSQL.Connection do
              ), %{state | tx: nil}}
 
           {:error, reason} ->
-            {:disconnect, LibSQL.Error.exception(message: reason), state}
+            {:disconnect, ExLibSQL.Error.exception(message: reason), state}
         end
     end
   end
@@ -203,7 +203,7 @@ defmodule LibSQL.Connection do
         {status, state}
 
       {:error, reason} ->
-        {:disconnect, LibSQL.Error.exception(message: reason), state}
+        {:disconnect, ExLibSQL.Error.exception(message: reason), state}
     end
   end
 
@@ -213,7 +213,7 @@ defmodule LibSQL.Connection do
   end
 
   def checkout(%__MODULE__{status: :busy} = state) do
-    {:disconnect, LibSQL.Error.exception(message: "database is busy"), state}
+    {:disconnect, ExLibSQL.Error.exception(message: "database is busy"), state}
   end
 
   @impl true

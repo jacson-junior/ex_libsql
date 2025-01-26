@@ -1,4 +1,4 @@
-defmodule LibSQL.Query do
+defmodule ExLibSQL.Query do
   @moduledoc """
   Query struct returned from a successfully prepared query.
   """

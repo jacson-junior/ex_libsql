@@ -1,4 +1,4 @@
-defmodule LibSQL.Native.Transaction do
+defmodule ExLibSQL.Native.Transaction do
   @type t :: %__MODULE__{
           tx_ref: reference()
         }

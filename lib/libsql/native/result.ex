@@ -1,4 +1,4 @@
-defmodule LibSQL.Native.Result do
+defmodule ExLibSQL.Native.Result do
   @moduledoc """
   Result struct returned from any successful query.
 

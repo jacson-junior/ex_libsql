@@ -1,7 +1,7 @@
-defmodule LibSQL.Macros do
+defmodule ExLibSQL.Macros do
   defmacro __using__(_opts) do
     quote do
-      import LibSQL.Macros
+      import ExLibSQL.Macros
     end
   end
 
@@ -27,69 +27,69 @@ defmodule LibSQL.Macros do
 
     quote location: :keep do
       @doc "Executes a prepared statement with params"
-      @spec unquote(func)(%LibSQL.Native.Statement{}, [String.t()]) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Statement{} = stmt, params) do
+      @spec unquote(func)(%ExLibSQL.Native.Statement{}, [String.t()]) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Statement{} = stmt, params) do
         unquote(func)(stmt, params, unquote(default_timeout))
       end
 
       @doc "Executes a prepared statement with params and custom timeout"
-      @spec unquote(func)(%LibSQL.Native.Statement{}, [String.t()], timeout()) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Statement{} = stmt, params, timeout)
+      @spec unquote(func)(%ExLibSQL.Native.Statement{}, [String.t()], timeout()) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Statement{} = stmt, params, timeout)
           when is_integer(timeout) do
         await_response(
-          LibSQL.Native.unquote(:"stmt_#{native_prefix}")(stmt.stmt_ref, params, self()),
+          ExLibSQL.Native.unquote(:"stmt_#{native_prefix}")(stmt.stmt_ref, params, self()),
           timeout
         )
       end
 
       @doc "Executes a SQL statement on a connection"
-      @spec unquote(func)(%LibSQL.Native.Connection{}, String.t()) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Connection{} = conn, statement) do
+      @spec unquote(func)(%ExLibSQL.Native.Connection{}, String.t()) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Connection{} = conn, statement) do
         unquote(func)(conn, statement, [], unquote(default_timeout))
       end
 
       @doc "Executes a SQL statement with params on a connection"
-      @spec unquote(func)(%LibSQL.Native.Connection{}, String.t(), [String.t()]) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Connection{} = conn, statement, params) do
+      @spec unquote(func)(%ExLibSQL.Native.Connection{}, String.t(), [String.t()]) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Connection{} = conn, statement, params) do
         unquote(func)(conn, statement, params, unquote(default_timeout))
       end
 
       @doc "Executes a SQL statement with params and custom timeout on a connection"
-      @spec unquote(func)(%LibSQL.Native.Connection{}, String.t(), [String.t()], timeout()) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Connection{} = conn, statement, params, timeout)
+      @spec unquote(func)(%ExLibSQL.Native.Connection{}, String.t(), [String.t()], timeout()) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Connection{} = conn, statement, params, timeout)
           when is_integer(timeout) do
         await_response(
-          LibSQL.Native.unquote(:"#{native_prefix}")(conn.conn_ref, statement, params, self()),
+          ExLibSQL.Native.unquote(:"#{native_prefix}")(conn.conn_ref, statement, params, self()),
           timeout
         )
       end
 
       @doc "Executes a SQL statement in a transaction"
-      @spec unquote(func)(%LibSQL.Native.Transaction{}, String.t()) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Transaction{} = tx, statement) do
+      @spec unquote(func)(%ExLibSQL.Native.Transaction{}, String.t()) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Transaction{} = tx, statement) do
         unquote(func)(tx, statement, [], unquote(default_timeout))
       end
 
       @doc "Executes a SQL statement with params in a transaction"
-      @spec unquote(func)(%LibSQL.Native.Transaction{}, String.t(), [String.t()]) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Transaction{} = tx, statement, params) do
+      @spec unquote(func)(%ExLibSQL.Native.Transaction{}, String.t(), [String.t()]) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Transaction{} = tx, statement, params) do
         unquote(func)(tx, statement, params, unquote(default_timeout))
       end
 
       @doc "Executes a SQL statement with params and custom timeout in a transaction"
-      @spec unquote(func)(%LibSQL.Native.Transaction{}, String.t(), [String.t()], timeout()) ::
-              {:ok, LibSQL.Native.Result.t()} | {:error, String.t()}
-      def unquote(func)(%LibSQL.Native.Transaction{} = tx, statement, params, timeout)
+      @spec unquote(func)(%ExLibSQL.Native.Transaction{}, String.t(), [String.t()], timeout()) ::
+              {:ok, ExLibSQL.Native.Result.t()} | {:error, String.t()}
+      def unquote(func)(%ExLibSQL.Native.Transaction{} = tx, statement, params, timeout)
           when is_integer(timeout) do
         await_response(
-          LibSQL.Native.unquote(:"tx_#{native_prefix}")(tx.tx_ref, statement, params, self()),
+          ExLibSQL.Native.unquote(:"tx_#{native_prefix}")(tx.tx_ref, statement, params, self()),
           timeout
         )
       end

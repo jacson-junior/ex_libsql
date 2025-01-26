@@ -1,4 +1,4 @@
-defmodule LibSQL.Native do
+defmodule ExLibSQL.Native do
   use Rustler, otp_app: :ex_libsql, crate: "libsql_native"
 
   def open(_mode), do: :erlang.nif_error(:nif_not_loaded)

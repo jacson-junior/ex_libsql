@@ -1,6 +1,6 @@
-defmodule LibSQL.Native.Client do
-  use LibSQL.Macros
-  alias LibSQL.Native.{Connection, Cursor, Statement, Transaction}
+defmodule ExLibSQL.Native.Client do
+  use ExLibSQL.Macros
+  alias ExLibSQL.Native.{Connection, Cursor, Statement, Transaction}
 
   import Bitwise
   import Record
@@ -35,12 +35,12 @@ defmodule LibSQL.Native.Client do
         :create, acc -> acc ||| @open_create
       end)
 
-    LibSQL.Native.open({mode, path, flag_int})
+    ExLibSQL.Native.open({mode, path, flag_int})
   end
 
   def connect({mode, path, url, token, opts})
       when mode == :remote_replica and is_nil(opts) == false do
-    LibSQL.Native.open(
+    ExLibSQL.Native.open(
       {mode, path, url, token,
        remote_opts(
          read_your_writes: Keyword.get(opts, :read_your_writes),
@@ -49,29 +49,29 @@ defmodule LibSQL.Native.Client do
     )
   end
 
-  def connect(mode), do: LibSQL.Native.open(mode)
+  def connect(mode), do: ExLibSQL.Native.open(mode)
 
   @spec disconnect(Connection.t(), timeout()) :: {:ok, {}} | {:error, binary()}
   def disconnect(%Connection{} = conn, timeout \\ @default_timeout),
-    do: await_response(LibSQL.Native.close(conn.conn_ref, self()), timeout)
+    do: await_response(ExLibSQL.Native.close(conn.conn_ref, self()), timeout)
 
   define_operations(:execute, @default_timeout)
   define_operations(:query, @default_timeout)
 
   def begin(%Connection{} = conn, behaviour \\ :deferred, timeout \\ @default_timeout) do
-    await_response(LibSQL.Native.begin(conn.conn_ref, behaviour, self()), timeout)
+    await_response(ExLibSQL.Native.begin(conn.conn_ref, behaviour, self()), timeout)
   end
 
   def commit(%Transaction{} = tx, timeout \\ @default_timeout) do
-    await_response(LibSQL.Native.commit(tx.tx_ref, self()), timeout)
+    await_response(ExLibSQL.Native.commit(tx.tx_ref, self()), timeout)
   end
 
   def rollback(%Transaction{} = tx, timeout \\ @default_timeout) do
-    await_response(LibSQL.Native.rollback(tx.tx_ref, self()), timeout)
+    await_response(ExLibSQL.Native.rollback(tx.tx_ref, self()), timeout)
   end
 
   def transaction_status(%Connection{} = conn, timeout \\ @default_timeout) do
-    await_response(LibSQL.Native.tx_status(conn.conn_ref, self()), timeout)
+    await_response(ExLibSQL.Native.tx_status(conn.conn_ref, self()), timeout)
   end
 
   def prepare(conn, statement) do
@@ -79,34 +79,34 @@ defmodule LibSQL.Native.Client do
   end
 
   def prepare(%Connection{} = conn, statement, timeout) do
-    await_response(LibSQL.Native.prepare(conn.conn_ref, statement, self()), timeout)
+    await_response(ExLibSQL.Native.prepare(conn.conn_ref, statement, self()), timeout)
   end
 
   def prepare(%Transaction{} = tx, statement, timeout) do
-    await_response(LibSQL.Native.tx_prepare(tx.tx_ref, statement, self()), timeout)
+    await_response(ExLibSQL.Native.tx_prepare(tx.tx_ref, statement, self()), timeout)
   end
 
   def cursor(%Statement{} = stmt, params) do
-    await_response(LibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), @default_timeout)
+    await_response(ExLibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), @default_timeout)
   end
 
   def cursor(%Statement{} = stmt, params, timeout) do
-    await_response(LibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), timeout)
+    await_response(ExLibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), timeout)
   end
 
   def fetch(%Cursor{} = cursor, amount) do
-    await_response(LibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), @default_timeout)
+    await_response(ExLibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), @default_timeout)
   end
 
   def fetch(%Cursor{} = cursor, amount, timeout) do
-    await_response(LibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), timeout)
+    await_response(ExLibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), timeout)
   end
 
   def finalize(%Statement{} = stmt) do
-    await_response(LibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), @default_timeout)
+    await_response(ExLibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), @default_timeout)
   end
 
   def finalize(%Statement{} = stmt, timeout) do
-    await_response(LibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), timeout)
+    await_response(ExLibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), timeout)
   end
 end

@@ -1,4 +1,4 @@
-defmodule LibSQL.Error do
+defmodule ExLibSQL.Error do
   @moduledoc """
   The error emitted from libSQL or a general error with the library.
   """

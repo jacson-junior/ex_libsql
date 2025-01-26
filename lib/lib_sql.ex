@@ -1,5 +1,5 @@
-defmodule LibSQL do
-  alias LibSQL.Connection
+defmodule ExLibSQL do
+  alias ExLibSQL.Connection
 
   def start_link(opts \\ []) do
     DBConnection.start_link(Connection, opts)

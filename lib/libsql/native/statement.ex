@@ -1,4 +1,4 @@
-defmodule LibSQL.Native.Statement do
+defmodule ExLibSQL.Native.Statement do
   @type t :: %__MODULE__{
           stmt_ref: reference()
         }

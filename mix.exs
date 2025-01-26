@@ -1,4 +1,4 @@
-defmodule LibSQL.MixProject do
+defmodule ExLibSQL.MixProject do
   use Mix.Project
 
   def project do

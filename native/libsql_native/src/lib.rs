@@ -82,7 +82,7 @@ pub struct RemoteOpts {
 }
 
 #[derive(NifStruct, Clone, Debug)]
-#[module = "LibSQL.Native.Result"]
+#[module = "ExLibSQL.Native.Result"]
 struct Result {
     columns: Option<Vec<String>>,
     last_insert_id: Option<i64>,
@@ -91,25 +91,25 @@ struct Result {
 }
 
 #[derive(NifStruct, Clone)]
-#[module = "LibSQL.Native.Connection"]
+#[module = "ExLibSQL.Native.Connection"]
 struct Connection {
     conn_ref: ResourceArc<ConnectionRef>,
 }
 
 #[derive(NifStruct, Clone)]
-#[module = "LibSQL.Native.Transaction"]
+#[module = "ExLibSQL.Native.Transaction"]
 struct Transaction {
     tx_ref: ResourceArc<TransactionRef>,
 }
 
 #[derive(NifStruct, Clone)]
-#[module = "LibSQL.Native.Statement"]
+#[module = "ExLibSQL.Native.Statement"]
 struct Statement {
     stmt_ref: ResourceArc<StatementRef>,
 }
 
 #[derive(NifStruct, Clone)]
-#[module = "LibSQL.Native.Cursor"]
+#[module = "ExLibSQL.Native.Cursor"]
 struct Cursor {
     cur_ref: ResourceArc<CursorRef>,
 }
@@ -769,4 +769,4 @@ fn close(conn: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), 
     Ok(())
 }
 
-rustler::init!("Elixir.LibSQL.Native", load = load);
+rustler::init!("Elixir.ExLibSQL.Native", load = load);

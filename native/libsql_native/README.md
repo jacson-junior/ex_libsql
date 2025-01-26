@@ -1,4 +1,4 @@
-# NIF for Elixir.LibSQL.Native
+# NIF for Elixir.ExLibSQL.Native
 
 ## To build the NIF module:
 
@@ -7,7 +7,7 @@
 ## To load the NIF:
 
 ```elixir
-defmodule LibSQL.Native do
+defmodule ExLibSQL.Native do
   use Rustler, otp_app: :ex_libsql, crate: "libsql_native"
 
   # When your NIF is loaded, it will override this function.

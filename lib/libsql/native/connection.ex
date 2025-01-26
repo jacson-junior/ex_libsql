@@ -1,4 +1,4 @@
-defmodule LibSQL.Native.Connection do
+defmodule ExLibSQL.Native.Connection do
   @type t :: %__MODULE__{
           conn_ref: reference()
         }

@@ -1,7 +1,7 @@
-defmodule LibSQL.IntegrationTest do
+defmodule ExLibSQL.IntegrationTest do
   use ExUnit.Case
 
-  alias LibSQL.Connection
+  alias ExLibSQL.Connection
 
   test "transaction handling with concurrent connections" do
     {:ok, conn1} =
