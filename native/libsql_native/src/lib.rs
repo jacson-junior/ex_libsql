@@ -143,7 +143,7 @@ fn open(mode: DatabaseOpenMode) -> result::Result<Connection, String> {
             Ok(conn) => Ok(Connection {
                 conn_ref: ResourceArc::new(ConnectionRef(Mutex::new(Some(conn)))),
             }),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => Err(error.to_string()),
         },
         Err(error) => Err(error.to_string()),
     }

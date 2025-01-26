@@ -1,6 +1,10 @@
 defmodule LibSQL.Connection do
   use DBConnection
 
+  alias LibSQL.Native
+  alias LibSQL.Native.Statement
+  alias LibSQL.Error
+  alias LibSQL.Query
   alias LibSQL.Native.Client
   alias LibSQL.Result
 
@@ -214,11 +218,127 @@ defmodule LibSQL.Connection do
   end
 
   @impl true
-  def handle_prepare(_query, _opts, _state) do
+  def handle_prepare(
+        %Query{statement: statement} = query,
+        options,
+        %__MODULE__{
+          conn: conn,
+          tx: tx
+        } = state
+      ) do
+    query = maybe_put_command(query, options)
+
+    with {:ok, query} <- do_prepare(tx || conn, query, options) do
+      {:ok, query, state}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}, state}
+    end
   end
 
   @impl true
-  def handle_execute(_query, _params, _opts, _state) do
+  def handle_execute(
+        %Query{
+          command: command,
+          ref: ref
+        } = query,
+        params,
+        _options,
+        %__MODULE__{} = state
+      )
+      when is_nil(command) == false and is_nil(ref) == false do
+    with {:ok, %Native.Result{} = result} <- Client.execute(ref, params) do
+      {:ok, query,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       ), state}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
+    end
+  end
+
+  def handle_execute(
+        %Query{
+          command: command,
+          ref: ref
+        } = query,
+        params,
+        options,
+        %__MODULE__{
+          conn: conn,
+          tx: tx
+        } = state
+      )
+      when is_nil(command) == false and is_nil(ref) do
+    with {:ok, query} <- do_prepare(tx || conn, query, options),
+         {:ok, %Native.Result{} = result} <- Client.execute(query.ref, params) do
+      {:ok, query,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       ), state}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
+    end
+  end
+
+  def handle_execute(
+        %Query{
+          command: command,
+          ref: ref
+        } = query,
+        params,
+        _options,
+        %__MODULE__{} = state
+      )
+      when is_nil(command) and is_nil(ref) == false do
+    with {:ok, %Native.Result{} = result} <- Client.query(ref, params) do
+      {:ok, query,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       ), state}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
+    end
+  end
+
+  def handle_execute(
+        %Query{
+          command: command,
+          ref: ref
+        } = query,
+        params,
+        options,
+        %__MODULE__{
+          conn: conn,
+          tx: tx
+        } = state
+      )
+      when is_nil(command) and is_nil(ref) do
+    with {:ok, query} <- do_prepare(tx || conn, query, options),
+         {:ok, %Native.Result{} = result} <- Client.query(query.ref, params) do
+      {:ok, query,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       ), state}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
+    end
   end
 
   @impl true
@@ -237,10 +357,29 @@ defmodule LibSQL.Connection do
   def handle_close(_query, _opts, _state) do
   end
 
+  defp do_prepare(conn, %Query{statement: statement} = query, options) do
+    query = maybe_put_command(query, options)
+
+    with {:ok, %Statement{} = stmt} <- Client.prepare(conn, IO.iodata_to_binary(statement)),
+         query <- %{query | ref: stmt} do
+      {:ok, query}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}}
+    end
+  end
+
   defp require_opt(opts, key, mode) do
     case Keyword.get(opts, key) do
       nil -> {:error, "`:#{key}` is required for mode `#{mode}`"}
       value -> {:ok, value}
+    end
+  end
+
+  def maybe_put_command(query, options) do
+    case Keyword.get(options, :command) do
+      nil -> query
+      command -> %{query | command: command}
     end
   end
 end
