@@ -34,7 +34,7 @@ defmodule LibSQL.ConnectionTest do
 
     test ":local mode - connects with flags" do
       with_mock LibSQL.Native,
-        open: fn {_, _, flags} -> {:ok, %LibSQL.Native.Connection{conn_ref: make_ref()}} end do
+        open: fn {_, _, _flags} -> {:ok, %LibSQL.Native.Connection{conn_ref: make_ref()}} end do
         assert {:ok, %LibSQL.Connection{}} =
                  LibSQL.Connection.connect(
                    mode: :local,

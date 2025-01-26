@@ -10,6 +10,9 @@ defmodule LibSQL.Native do
   def prepare(_conn, _sql, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def stmt_execute(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def stmt_query(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_finalize(_stmt, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_cursor(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_fetch(_cursor, _amount, _pid), do: :erlang.nif_error(:nif_not_loaded)
 
   def begin(_conn, _behaviour, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def commit(_tx, _pid), do: :erlang.nif_error(:nif_not_loaded)

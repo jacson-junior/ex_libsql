@@ -33,10 +33,12 @@ mod errors {
 struct ConnectionRef(Mutex<Option<libsql::Connection>>);
 struct TransactionRef(Mutex<Option<libsql::Transaction>>);
 struct StatementRef(Mutex<libsql::Statement>);
+struct CursorRef(Mutex<libsql::Rows>);
 
 impl Resource for ConnectionRef {}
 impl Resource for TransactionRef {}
 impl Resource for StatementRef {}
+impl Resource for CursorRef {}
 
 #[derive(NifTaggedEnum)]
 pub enum DatabaseOpenMode {
@@ -44,6 +46,12 @@ pub enum DatabaseOpenMode {
     LocalReplica(String, Option<LocalFlags>),
     Remote(String, String),
     RemoteReplica(String, String, String, Option<RemoteOpts>),
+}
+
+#[derive(NifTaggedEnum)]
+pub enum CursorResult {
+    Continue(Vec<Vec<value::Value>>),
+    Halt(Vec<Vec<value::Value>>),
 }
 
 #[derive(NifUnitEnum, Default)]
@@ -100,10 +108,17 @@ struct Statement {
     stmt_ref: ResourceArc<StatementRef>,
 }
 
+#[derive(NifStruct, Clone)]
+#[module = "LibSQL.Native.Cursor"]
+struct Cursor {
+    cur_ref: ResourceArc<CursorRef>,
+}
+
 fn load(env: Env, _: Term) -> bool {
     env.register::<ConnectionRef>().is_ok()
         && env.register::<TransactionRef>().is_ok()
         && env.register::<StatementRef>().is_ok()
+        && env.register::<CursorRef>().is_ok()
 }
 
 #[rustler::nif]
@@ -615,6 +630,110 @@ fn stmt_query(
                 columns: Some(columns),
                 last_insert_id: None,
             })
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
+}
+
+#[rustler::nif]
+fn stmt_cursor(
+    resource: ResourceArc<StatementRef>,
+    params: Vec<value::Value>,
+    pid: LocalPid,
+) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let result: result::Result<Cursor, String> = async {
+            let mut statement = resource.0.lock().await;
+
+            let rows = statement.query(params).await.map_err(|e| e.to_string())?;
+
+            Ok(Cursor {
+                cur_ref: ResourceArc::new(CursorRef(Mutex::new(rows))),
+            })
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
+}
+
+#[rustler::nif]
+fn stmt_fetch(
+    resource: ResourceArc<CursorRef>,
+    amount: i64,
+    pid: LocalPid,
+) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let result: result::Result<CursorResult, String> = async {
+            let mut cursor = resource.0.lock().await;
+
+            let mut data = Vec::new();
+            let mut has_more = true;
+
+            for _ in 0..amount {
+                match cursor.next().await {
+                    Ok(Some(row)) => {
+                        let column_count: usize = cursor.column_count().try_into().unwrap();
+                        let mut row_data = Vec::with_capacity(column_count);
+
+                        for idx in 0..column_count {
+                            row_data.push(
+                                row.get_value(idx as i32)
+                                    .map(|d| d.into())
+                                    .map_err(|e| e.to_string())?,
+                            );
+                        }
+                        data.push(row_data);
+                    }
+                    Ok(None) => {
+                        has_more = false;
+                        break;
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+
+            Ok(if has_more {
+                CursorResult::Continue(data)
+            } else {
+                CursorResult::Halt(data)
+            })
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
+}
+
+#[rustler::nif]
+fn stmt_finalize(resource: ResourceArc<StatementRef>, pid: LocalPid) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let result: result::Result<(), String> = async {
+            let mut stmt = resource.0.lock().await;
+
+            stmt.finalize();
+
+            Ok(())
         }
         .await;
 

@@ -1,7 +1,6 @@
 defmodule LibSQL.Connection do
   use DBConnection
 
-  alias LibSQL.Native
   alias LibSQL.Native.Statement
   alias LibSQL.Error
   alias LibSQL.Query
@@ -10,7 +9,7 @@ defmodule LibSQL.Connection do
 
   require Logger
 
-  defstruct conn: nil, tx: nil, status: :idle, default_transaction_mode: :deferred
+  defstruct conn: nil, tx: nil, status: :idle, default_transaction_mode: :deferred, chunk_size: 50
 
   @doc """
   Connects to a LibSQL database with the specified options.
@@ -238,103 +237,36 @@ defmodule LibSQL.Connection do
 
   @impl true
   def handle_execute(
-        %Query{
-          command: command,
-          ref: ref
-        } = query,
-        params,
-        _options,
-        %__MODULE__{} = state
-      )
-      when is_nil(command) == false and is_nil(ref) == false do
-    with {:ok, %Native.Result{} = result} <- Client.execute(ref, params) do
-      {:ok, query,
-       Result.new(
-         command: command,
-         num_rows: result.num_rows,
-         rows: result.rows,
-         columns: result.columns
-       ), state}
-    else
-      {:error, reason} ->
-        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
-    end
-  end
-
-  def handle_execute(
-        %Query{
-          command: command,
-          ref: ref
-        } = query,
+        %Query{} = query,
         params,
         options,
         %__MODULE__{
           conn: conn,
           tx: tx
         } = state
-      )
-      when is_nil(command) == false and is_nil(ref) do
-    with {:ok, query} <- do_prepare(tx || conn, query, options),
-         {:ok, %Native.Result{} = result} <- Client.execute(query.ref, params) do
-      {:ok, query,
-       Result.new(
-         command: command,
-         num_rows: result.num_rows,
-         rows: result.rows,
-         columns: result.columns
-       ), state}
+      ) do
+    with {:ok, query} <- maybe_prepare(tx || conn, query, options),
+         {:ok, result} <- do_execute(tx || conn, query, params) do
+      {:ok, query, result, state}
     else
       {:error, reason} ->
         {:error, %Error{message: to_string(reason), statement: query.statement}, state}
     end
   end
 
-  def handle_execute(
-        %Query{
-          command: command,
-          ref: ref
-        } = query,
+  @impl true
+  def handle_declare(
+        %Query{} = query,
         params,
-        _options,
-        %__MODULE__{} = state
-      )
-      when is_nil(command) and is_nil(ref) == false do
-    with {:ok, %Native.Result{} = result} <- Client.query(ref, params) do
-      {:ok, query,
-       Result.new(
-         command: command,
-         num_rows: result.num_rows,
-         rows: result.rows,
-         columns: result.columns
-       ), state}
-    else
-      {:error, reason} ->
-        {:error, %Error{message: to_string(reason), statement: query.statement}, state}
-    end
-  end
-
-  def handle_execute(
-        %Query{
-          command: command,
-          ref: ref
-        } = query,
-        params,
-        options,
+        opts,
         %__MODULE__{
           conn: conn,
           tx: tx
         } = state
-      )
-      when is_nil(command) and is_nil(ref) do
-    with {:ok, query} <- do_prepare(tx || conn, query, options),
-         {:ok, %Native.Result{} = result} <- Client.query(query.ref, params) do
-      {:ok, query,
-       Result.new(
-         command: command,
-         num_rows: result.num_rows,
-         rows: result.rows,
-         columns: result.columns
-       ), state}
+      ) do
+    with {:ok, query} <- do_prepare(tx || conn, query, opts),
+         {:ok, cursor} <- Client.cursor(query.ref, params) do
+      {:ok, query, cursor, state}
     else
       {:error, reason} ->
         {:error, %Error{message: to_string(reason), statement: query.statement}, state}
@@ -342,19 +274,116 @@ defmodule LibSQL.Connection do
   end
 
   @impl true
-  def handle_declare(_query, _cursor, _opts, _state) do
+  def handle_fetch(
+        %Query{statement: statement},
+        cursor,
+        opts,
+        %__MODULE__{} = state
+      ) do
+    chunk_size = opts[:chunk_size] || opts[:max_rows] || state.chunk_size
+
+    with {:ok, result} <- Client.fetch(cursor, chunk_size) do
+      case result do
+        {:halt, rows} ->
+          {:halt, %Result{rows: rows, command: :fetch, num_rows: length(rows)}, state}
+
+        {:continue, rows} ->
+          {:cont, %Result{rows: rows, command: :fetch, num_rows: chunk_size}, state}
+      end
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}, state}
+    end
   end
 
   @impl true
-  def handle_fetch(_query, _cursor, _opts, _state) do
+  def handle_deallocate(
+        %Query{statement: statement, ref: ref},
+        _cursor,
+        _opts,
+        state
+      ) do
+    case Client.finalize(ref) do
+      {:ok, _} ->
+        {:ok, nil, state}
+
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}, state}
+    end
   end
 
   @impl true
-  def handle_deallocate(_query, _cursor, _opts, _state) do
+  def handle_close(
+        %Query{statement: statement, ref: ref},
+        _opts,
+        state
+      ) do
+    case Client.finalize(ref) do
+      {:ok, _} ->
+        {:ok, nil, state}
+
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}, state}
+    end
   end
 
-  @impl true
-  def handle_close(_query, _opts, _state) do
+  defp maybe_prepare(
+         conn,
+         %Query{
+           statement: statement,
+           ref: ref
+         } = query,
+         options
+       )
+       when is_nil(ref) do
+    query = maybe_put_command(query, options)
+
+    with {:ok, %Statement{} = stmt} <- Client.prepare(conn, IO.iodata_to_binary(statement)),
+         query <- %{query | ref: stmt} do
+      {:ok, query}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}}
+    end
+  end
+
+  defp maybe_prepare(
+         _conn,
+         %Query{} = query,
+         _options
+       ) do
+    {:ok, query}
+  end
+
+  defp do_execute(conn, %Query{statement: statement, command: command}, params)
+       when is_nil(command) do
+    with {:ok, result} <- Client.query(conn, IO.iodata_to_binary(statement), params) do
+      {:ok,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       )}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}}
+    end
+  end
+
+  defp do_execute(conn, %Query{statement: statement, command: command}, params) do
+    with {:ok, result} <- Client.execute(conn, IO.iodata_to_binary(statement), params) do
+      {:ok,
+       Result.new(
+         command: command,
+         num_rows: result.num_rows,
+         rows: result.rows,
+         columns: result.columns
+       )}
+    else
+      {:error, reason} ->
+        {:error, %Error{message: to_string(reason), statement: statement}}
+    end
   end
 
   defp do_prepare(conn, %Query{statement: statement} = query, options) do

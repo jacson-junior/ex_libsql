@@ -1,6 +1,6 @@
 defmodule LibSQL.Native.Client do
   use LibSQL.Macros
-  alias LibSQL.Native.{Connection, Transaction}
+  alias LibSQL.Native.{Connection, Cursor, Statement, Transaction}
 
   import Bitwise
   import Record
@@ -84,5 +84,29 @@ defmodule LibSQL.Native.Client do
 
   def prepare(%Transaction{} = tx, statement, timeout) do
     await_response(LibSQL.Native.tx_prepare(tx.tx_ref, statement, self()), timeout)
+  end
+
+  def cursor(%Statement{} = stmt, params) do
+    await_response(LibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), @default_timeout)
+  end
+
+  def cursor(%Statement{} = stmt, params, timeout) do
+    await_response(LibSQL.Native.stmt_cursor(stmt.stmt_ref, params, self()), timeout)
+  end
+
+  def fetch(%Cursor{} = cursor, amount) do
+    await_response(LibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), @default_timeout)
+  end
+
+  def fetch(%Cursor{} = cursor, amount, timeout) do
+    await_response(LibSQL.Native.stmt_fetch(cursor.cur_ref, amount, self()), timeout)
+  end
+
+  def finalize(%Statement{} = stmt) do
+    await_response(LibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), @default_timeout)
+  end
+
+  def finalize(%Statement{} = stmt, timeout) do
+    await_response(LibSQL.Native.stmt_finalize(stmt.stmt_ref, self()), timeout)
   end
 end
