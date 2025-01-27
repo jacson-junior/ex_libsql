@@ -6,13 +6,15 @@ defmodule ExLibSQL.Query do
           statement: iodata(),
           name: atom() | String.t(),
           ref: reference() | nil,
-          command: :insert | :delete | :update | nil
+          command: :insert | :delete | :update | nil,
+          returns_rows?: boolean()
         }
 
   defstruct statement: nil,
             name: nil,
             ref: nil,
-            command: nil
+            command: nil,
+            returns_rows?: nil
 
   def build(options) do
     statement = Keyword.get(options, :statement)
@@ -29,8 +31,53 @@ defmodule ExLibSQL.Query do
       statement: statement,
       name: name,
       ref: ref,
-      command: command
+      command: command,
+      returns_rows?: returns_rows?(statement)
     }
+  end
+
+  @spec returns_rows?(iodata() | nil) :: boolean()
+  defp returns_rows?(statement) do
+    case statement do
+      nil ->
+        false
+
+      statement when is_binary(statement) ->
+        # Remove comments first
+        clean_statement = remove_comments(statement)
+        clean_statement = String.trim(clean_statement)
+
+        cond do
+          # Check for standalone SELECT statements or those in WITH clauses
+          String.match?(clean_statement, ~r/^\s*(?:WITH.*?)?SELECT/i) -> true
+          String.match?(clean_statement, ~r/^\s*PRAGMA/i) -> true
+          String.match?(clean_statement, ~r/^\s*EXPLAIN/i) -> true
+          has_returning_clause?(clean_statement) -> true
+          true -> false
+        end
+    end
+  end
+
+  defp has_returning_clause?(query) when is_binary(query) do
+    # Clean and normalize the query
+    clean_query =
+      query
+      |> remove_comments()
+      |> String.trim()
+      |> String.upcase()
+
+    # Match RETURNING clause at the end of statements
+    returning_pattern = ~r/\s+RETURNING\s+(?:\*|"?[A-Z0-9_]+"?(?:\s*,\s*"?[A-Z0-9_]+"?)*)\s*$/
+
+    String.match?(clean_query, returning_pattern)
+  end
+
+  defp remove_comments(query) when is_binary(query) do
+    # Remove inline comments
+    query = Regex.replace(~r/--[^\n]*/, query, "")
+
+    # Remove multi-line comments
+    Regex.replace(~r{/\*.*?\*/}s, query, "")
   end
 
   defp extract_command(nil), do: nil

@@ -1,4 +1,6 @@
-use rustler::{Binary, Decoder, Encoder, Term};
+use rustler::{Atom, Binary, Decoder, Encoder, Term};
+
+use crate::atoms;
 
 #[derive(Debug, Clone)]
 pub struct Value(libsql::Value);
@@ -39,6 +41,13 @@ impl<'a> Decoder<'a> for Value {
         }
         if let Ok(data) = term.decode::<String>() {
             return Ok(libsql::Value::Text(data).into());
+        }
+        if let Ok(data) = term.decode::<(Atom, Binary)>() {
+            let (atom, binary) = data;
+
+            if atom == atoms::blob() {
+                return Ok(libsql::Value::Blob(binary.as_slice().to_vec()).into());
+            }
         }
         if let Ok(data) = term.decode::<Binary>() {
             return Ok(libsql::Value::Blob(data.as_slice().to_vec()).into());

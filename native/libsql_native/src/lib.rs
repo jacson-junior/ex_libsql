@@ -20,6 +20,8 @@ mod atoms {
 
         idle,
         transaction,
+
+        blob,
     }
 }
 
