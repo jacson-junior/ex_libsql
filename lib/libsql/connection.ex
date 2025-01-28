@@ -1,20 +1,20 @@
 defmodule ExLibSQL.Connection do
   use DBConnection
 
-  alias ExLibSQL.Native.Statement
   alias ExLibSQL.Error
-  alias ExLibSQL.Query
   alias ExLibSQL.Native.Client
+  alias ExLibSQL.Native.Statement
+  alias ExLibSQL.Pragma
+  alias ExLibSQL.Query
   alias ExLibSQL.Result
 
   require Logger
 
   defstruct conn: nil,
-            tx: nil,
             status: :idle,
             transaction_status: :idle,
             default_transaction_mode: :deferred,
-            chunk_size: 50
+            chunk_size: nil
 
   @doc """
   Connects to a ExLibSQL database with the specified options.
@@ -29,7 +29,19 @@ defmodule ExLibSQL.Connection do
     * `:remote_replica_opts` - Optional for :remote_replica mode. Additional options for the remote replica connection
       * `:read_your_writes` - Optional [default: true]. Whether to read your own writes
       * `:sync_interval` - Optional. Enables syncing the replica with the primary at the specified interval in milliseconds
-    * `:transaction_mode` - Optional [default: :deferred]. The transaction mode (:deferred, :immediate, :exclusive, :read_only)
+    * `:transaction_mode` - Optional [default: :deferred]. The transaction mode (:deferred, :immediate, :exclusive)
+    * `:journal_mode` - Optional [default: :wal]. The journal mode (:wal, :delete, :truncate, :memory)
+    * `:temp_store` - Optional [default: :memory]. The temp store mode (:default, :file, :memory)
+    * `:synchronous` - Optional [default: :normal]. The synchronous mode (:off, :normal, :full, :extra)
+    * `:foreign_keys` - Optional [default: :on]. Whether to enable foreign keys (:on, :off)
+    * `:cache_size` - Optional [default: -2000]. The cache size in kilobytes
+    * `:cache_spill` - Optional [default: :on]. The cache spill mode (:on, :off)
+    * `:auto_vacuum` - Optional [default: :none]. The auto vacuum mode (:none, :full, :incremental)
+    * `:locking_mode` - Optional [default: :normal]. The locking mode (:normal, :exclusive)
+    * `:secure_delete` - Optional [default: :off]. The secure delete mode (:on, :off)
+    * `:wal_auto_check_point` - Optional [default: 1000]. The WAL auto check point mode
+    * `:case_sensitive_like` - Optional [default: :off]. Whether to use case sensitive LIKE (:on, :off)
+    * `:busy_timeout` - Optional [default: 2000]. The busy timeout in milliseconds
 
   ## Examples
 
@@ -45,69 +57,46 @@ defmodule ExLibSQL.Connection do
   """
   @impl true
   def connect(opts) do
-    Logger.debug("Connecting to database with options: #{inspect(opts)}")
-
-    result =
-      case Keyword.get(opts, :mode) do
-        nil ->
-          {:error, ":mode option is required"}
-
-        :memory ->
-          Client.connect({:local, ":memory:", Keyword.get(opts, :flags)})
-
-        :local ->
-          with {:ok, path} <- require_opt(opts, :path, :local) do
-            Client.connect({:local, path, Keyword.get(opts, :flags)})
-          end
-
-        :local_replica ->
-          with {:ok, path} <- require_opt(opts, :path, :local_replica) do
-            Client.connect({:local_replica, path, Keyword.get(opts, :flags)})
-          end
-
-        :remote ->
-          with {:ok, url} <- require_opt(opts, :url, :remote),
-               {:ok, token} <- require_opt(opts, :token, :remote) do
-            Client.connect({:remote, url, token})
-          end
-
-        :remote_replica ->
-          with {:ok, path} <- require_opt(opts, :path, :remote_replica),
-               {:ok, url} <- require_opt(opts, :url, :remote_replica),
-               {:ok, token} <- require_opt(opts, :token, :remote_replica) do
-            Client.connect(
-              {:remote_replica, path, url, token, Keyword.get(opts, :remote_replica_opts)}
-            )
-          end
-
-        mode ->
-          {:error, "invalid mode: #{inspect(mode)}"}
-      end
-
-    case result do
-      {:ok, conn} -> {:ok, %__MODULE__{conn: conn}}
-      {:error, _reason} = error -> error
+    with {:ok, conn} <- do_connect(opts),
+         :ok <- maybe_set_pragma(conn, "journal_mode", Pragma.journal_mode(opts)),
+         :ok <- set_pragma(conn, "temp_store", Pragma.temp_store(opts)),
+         :ok <- set_pragma(conn, "synchronous", Pragma.synchronous(opts)),
+         :ok <- set_pragma(conn, "foreign_keys", Pragma.foreign_keys(opts)),
+         :ok <- maybe_set_pragma(conn, "cache_size", Pragma.cache_size(opts)),
+         :ok <- set_pragma(conn, "cache_spill", Pragma.cache_spill(opts)),
+         :ok <- set_pragma(conn, "auto_vacuum", Pragma.auto_vacuum(opts)),
+         :ok <- set_pragma(conn, "locking_mode", Pragma.locking_mode(opts)),
+         :ok <- set_pragma(conn, "secure_delete", Pragma.secure_delete(opts)),
+         :ok <- set_pragma(conn, "wal_auto_check_point", Pragma.wal_auto_check_point(opts)),
+         :ok <- set_pragma(conn, "case_sensitive_like", Pragma.case_sensitive_like(opts)),
+         :ok <- set_pragma(conn, "busy_timeout", Pragma.busy_timeout(opts)) do
+      {:ok,
+       %__MODULE__{
+         conn: conn,
+         chunk_size: Keyword.get(opts, :chunk_size, 50)
+       }}
+    else
+      {:error, reason} -> {:error, ExLibSQL.Error.exception(message: reason)}
     end
   end
 
   @impl true
-  def disconnect(_err, %__MODULE__{conn: conn}) do
-    Logger.debug("Disconnecting from database")
+  def disconnect(_err, %__MODULE__{conn: nil}) do
+    :ok
+  end
 
+  def disconnect(_err, %__MODULE__{conn: conn}) do
     case conn |> Client.disconnect() do
       {:ok, _} ->
         :ok
 
       {:error, reason} ->
-        Logger.warning("Failed to disconnect: #{reason}")
         :ok
     end
   end
 
   @impl true
   def ping(%__MODULE__{conn: conn} = state) do
-    Logger.debug("Pinging database")
-
     case conn |> Client.query("SELECT 1") do
       {:ok, _} -> {:ok, state}
       {:error, reason} -> {:disconnect, reason, state}
@@ -115,61 +104,49 @@ defmodule ExLibSQL.Connection do
   end
 
   @impl true
-  def handle_begin(opts, %{tx: tx, conn: conn, transaction_status: transaction_status} = state) do
-    Logger.debug("Beginning transaction with options: #{inspect(opts)}")
-
+  def handle_begin(opts, %{conn: conn, transaction_status: transaction_status} = state) do
     mode = Keyword.get(opts, :transaction_mode, state.default_transaction_mode)
 
-    if mode in [:deferred, :immediate, :exclusive, :read_only] do
-      case transaction_status do
-        :idle ->
-          with {:ok, new_tx} <- Client.begin(conn, mode),
-               {:ok, transaction_status} <- Client.transaction_status(conn) do
-            {:ok,
-             Result.new(
-               command: :begin,
-               num_rows: 0,
-               rows: [],
-               columns: []
-             ), %{state | tx: new_tx, transaction_status: transaction_status}}
-          else
-            {:error, reason} ->
-              {:disconnect, ExLibSQL.Error.exception(message: reason), state}
-          end
+    case transaction_status do
+      :idle ->
+        with {:ok, _} <- Client.begin(conn, mode),
+             {:ok, transaction_status} <- Client.transaction_status(conn) do
+          {:ok,
+           Result.new(
+             command: :begin,
+             num_rows: 0,
+             rows: [],
+             columns: []
+           ), %{state | transaction_status: transaction_status}}
+        else
+          {:error, reason} ->
+            {:disconnect, ExLibSQL.Error.exception(message: reason), state}
+        end
 
-        :transaction ->
-          with {:ok,
-                %{
-                  num_rows: num_rows,
-                  rows: rows,
-                  columns: columns
-                }} <- Client.execute(tx, "SAVEPOINT ex_libsql_savepoint"),
-               {:ok, transaction_status} <- Client.transaction_status(conn) do
-            {:ok,
-             Result.new(
-               command: :begin,
-               num_rows: num_rows,
-               rows: rows,
-               columns: columns
-             ), %{state | transaction_status: transaction_status}}
-          else
-            {:error, reason} ->
-              {:disconnect, ExLibSQL.Error.exception(message: reason), state}
-          end
-      end
-    else
-      {:disconnect,
-       ExLibSQL.Error.exception(message: "invalid transaction mode: #{inspect(mode)}"), state}
+      :transaction ->
+        savepoint_name = "savepoint_#{:erlang.unique_integer([:positive])}"
+
+        with {:ok, _} <- Client.execute(conn, "SAVEPOINT #{savepoint_name}"),
+             {:ok, transaction_status} <- Client.transaction_status(conn) do
+          {:ok,
+           Result.new(
+             command: :begin,
+             num_rows: 0,
+             rows: [],
+             columns: []
+           ), %{state | transaction_status: transaction_status}}
+        else
+          {:error, reason} ->
+            {:disconnect, ExLibSQL.Error.exception(message: reason), state}
+        end
     end
   end
 
   @impl true
-  def handle_commit(_opts, %{tx: tx, conn: conn, transaction_status: transaction_status} = state) do
-    Logger.debug("Committing transaction")
-
+  def handle_commit(_opts, %{conn: conn, transaction_status: transaction_status} = state) do
     case transaction_status do
       :transaction ->
-        with {:ok, _} <- Client.commit(tx),
+        with {:ok, _} <- Client.commit(conn),
              {:ok, transaction_status} <- Client.transaction_status(conn) do
           {:ok,
            Result.new(
@@ -177,7 +154,7 @@ defmodule ExLibSQL.Connection do
              num_rows: 0,
              rows: [],
              columns: []
-           ), %{state | tx: nil, transaction_status: transaction_status}}
+           ), %{state | transaction_status: transaction_status}}
         else
           {:error, reason} ->
             {:disconnect, ExLibSQL.Error.exception(message: reason), state}
@@ -186,15 +163,10 @@ defmodule ExLibSQL.Connection do
   end
 
   @impl true
-  def handle_rollback(
-        _opts,
-        %{tx: tx, conn: conn, transaction_status: transaction_status} = state
-      ) do
-    Logger.debug("Rolling back transaction")
-
+  def handle_rollback(_opts, %{conn: conn, transaction_status: transaction_status} = state) do
     case transaction_status do
       :transaction ->
-        with {:ok, _} <- Client.rollback(tx),
+        with {:ok, _} <- Client.rollback(conn),
              {:ok, transaction_status} <- Client.transaction_status(conn) do
           {:ok,
            Result.new(
@@ -202,11 +174,20 @@ defmodule ExLibSQL.Connection do
              num_rows: 0,
              rows: [],
              columns: []
-           ), %{state | tx: nil, transaction_status: transaction_status}}
+           ), %{state | transaction_status: transaction_status}}
         else
           {:error, reason} ->
             {:disconnect, ExLibSQL.Error.exception(message: reason), state}
         end
+
+      _ ->
+        {:ok,
+         Result.new(
+           command: :rollback,
+           num_rows: 0,
+           rows: [],
+           columns: []
+         ), state}
     end
   end
 
@@ -217,12 +198,10 @@ defmodule ExLibSQL.Connection do
 
   @impl true
   def checkout(%__MODULE__{status: :idle} = state) do
-    Logger.debug("Checking out database connection")
     {:ok, %{state | status: :busy}}
   end
 
   def checkout(%__MODULE__{status: :busy} = state) do
-    Logger.debug("Database is busy")
     {:disconnect, ExLibSQL.Error.exception(message: "database is busy"), state}
   end
 
@@ -231,14 +210,12 @@ defmodule ExLibSQL.Connection do
         %Query{statement: statement} = query,
         options,
         %__MODULE__{
-          conn: conn,
-          tx: tx
+          conn: conn
         } = state
       ) do
-    Logger.debug("Preparing query: #{inspect(query)}")
     query = maybe_put_command(query, options)
 
-    with {:ok, query} <- do_prepare(tx || conn, query, options) do
+    with {:ok, query} <- do_prepare(conn, query, options) do
       {:ok, query, state}
     else
       {:error, reason} ->
@@ -252,17 +229,18 @@ defmodule ExLibSQL.Connection do
         params,
         options,
         %__MODULE__{
-          conn: conn,
-          tx: tx
+          conn: conn
         } = state
       ) do
-    Logger.debug("Executing query: #{inspect(query)} with params: #{inspect(params)}")
-
-    with {:ok, query} <- maybe_prepare(tx || conn, query, options),
-         {:ok, result} <- do_execute(tx || conn, query, params),
+    with {:ok, query} <- maybe_prepare(conn, query, options),
+         {:ok, result} <- do_execute(conn, query, params),
+         {:ok, _} <- Client.reset(conn, query.ref),
          {:ok, transaction_status} <- Client.transaction_status(conn) do
       {:ok, query, result, %{state | transaction_status: transaction_status}}
     else
+      {:error, %Error{} = reason} ->
+        {:error, %Error{reason | statement: query.statement}, state}
+
       {:error, reason} ->
         {:error, %Error{message: to_string(reason), statement: query.statement}, state}
     end
@@ -274,14 +252,12 @@ defmodule ExLibSQL.Connection do
         params,
         opts,
         %__MODULE__{
-          conn: conn,
-          tx: tx
+          conn: conn
         } = state
       ) do
-    Logger.debug("Declaring cursor: #{inspect(query)}")
-
-    with {:ok, query} <- do_prepare(tx || conn, query, opts),
-         {:ok, cursor} <- Client.cursor(query.ref, params) do
+    with {:ok, query} <- do_prepare(conn, query, opts),
+         {:ok, _} <- Client.reset(conn, query.ref),
+         {:ok, cursor} <- Client.cursor(conn, query.ref, params) do
       {:ok, query, cursor, state}
     else
       {:error, reason} ->
@@ -294,12 +270,13 @@ defmodule ExLibSQL.Connection do
         %Query{statement: statement},
         cursor,
         opts,
-        %__MODULE__{} = state
+        %__MODULE__{
+          conn: conn
+        } = state
       ) do
-    Logger.debug("Fetching cursor: #{inspect(cursor)}")
     chunk_size = opts[:chunk_size] || opts[:max_rows] || state.chunk_size
 
-    with {:ok, result} <- Client.fetch(cursor, chunk_size) do
+    with {:ok, result} <- Client.fetch(conn, cursor, chunk_size) do
       case result do
         {:halt, rows} ->
           {:halt, %Result{rows: rows, command: :fetch, num_rows: length(rows)}, state}
@@ -318,11 +295,11 @@ defmodule ExLibSQL.Connection do
         %Query{statement: statement, ref: ref},
         _cursor,
         _opts,
-        state
+        %__MODULE__{
+          conn: conn
+        } = state
       ) do
-    Logger.debug("Deallocating cursor: #{inspect(ref)}")
-
-    case Client.finalize(ref) do
+    case Client.finalize(conn, ref) do
       {:ok, _} ->
         {:ok, nil, state}
 
@@ -335,16 +312,46 @@ defmodule ExLibSQL.Connection do
   def handle_close(
         %Query{statement: statement, ref: ref},
         _opts,
-        state
+        %__MODULE__{
+          conn: conn
+        } = state
       ) do
-    Logger.debug("Closing cursor: #{inspect(ref)}")
-
-    case Client.finalize(ref) do
-      {:ok, _} ->
-        {:ok, nil, state}
-
+    with {:ok, _} <- Client.reset(conn, ref),
+         {:ok, _} <- Client.finalize(conn, ref) do
+      {:ok, nil, state}
+    else
       {:error, reason} ->
         {:error, %Error{message: to_string(reason), statement: statement}, state}
+    end
+  end
+
+  defp set_pragma(conn, pragma_name, value) do
+    case Client.query(conn, "PRAGMA #{pragma_name} = #{value}", []) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, "failed to set pragma #{pragma_name} to #{value} - #{reason}"}
+    end
+  end
+
+  defp get_pragma(conn, pragma_name) do
+    {:ok, statement} = Client.prepare(conn, "PRAGMA #{pragma_name}")
+
+    case Client.query(conn, statement, []) do
+      {:ok, %{rows: [[value]]}} -> {:ok, value}
+      _ -> {:error, "failed to get pragma #{pragma_name}"}
+    end
+  end
+
+  defp maybe_set_pragma(conn, pragma_name, value) do
+    case get_pragma(conn, pragma_name) do
+      {:ok, current} ->
+        if current == value do
+          :ok
+        else
+          set_pragma(conn, pragma_name, value)
+        end
+
+      _ ->
+        set_pragma(conn, pragma_name, value)
     end
   end
 
@@ -374,6 +381,44 @@ defmodule ExLibSQL.Connection do
          _options
        ) do
     {:ok, query}
+  end
+
+  defp do_connect(opts) do
+    case Keyword.get(opts, :mode) do
+      nil ->
+        {:error, ":mode option is required"}
+
+      :memory ->
+        Client.connect({:local, ":memory:", Keyword.get(opts, :flags)})
+
+      :local ->
+        with {:ok, path} <- require_opt(opts, :path, :local) do
+          Client.connect({:local, path, Keyword.get(opts, :flags)})
+        end
+
+      :local_replica ->
+        with {:ok, path} <- require_opt(opts, :path, :local_replica) do
+          Client.connect({:local_replica, path, Keyword.get(opts, :flags)})
+        end
+
+      :remote ->
+        with {:ok, url} <- require_opt(opts, :url, :remote),
+             {:ok, token} <- require_opt(opts, :token, :remote) do
+          Client.connect({:remote, url, token})
+        end
+
+      :remote_replica ->
+        with {:ok, path} <- require_opt(opts, :path, :remote_replica),
+             {:ok, url} <- require_opt(opts, :url, :remote_replica),
+             {:ok, token} <- require_opt(opts, :token, :remote_replica) do
+          Client.connect(
+            {:remote_replica, path, url, token, Keyword.get(opts, :remote_replica_opts)}
+          )
+        end
+
+      mode ->
+        {:error, "invalid mode: #{inspect(mode)}"}
+    end
   end
 
   defp do_execute(

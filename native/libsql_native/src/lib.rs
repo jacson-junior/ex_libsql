@@ -1,10 +1,9 @@
 use core::result;
-use errors::{CONN_CONSUMED, CONN_NOT_AVAILABLE, TX_CONSUMED, TX_NOT_AVAILABLE};
+use errors::{CONN_CONSUMED, CONN_NOT_AVAILABLE};
 use libsql::Builder;
 use open::LocalFlags;
 use rustler::{
-    Atom, Env, LocalPid, NifRecord, NifStruct, NifTaggedEnum, NifUnitEnum, OwnedEnv, Resource,
-    ResourceArc, Term,
+    Atom, Env, LocalPid, NifRecord, NifStruct, NifTaggedEnum, OwnedEnv, Resource, ResourceArc, Term,
 };
 use tokio::sync::Mutex;
 
@@ -17,28 +16,22 @@ mod atoms {
     rustler::atoms! {
         ok,
         error,
-
         idle,
         transaction,
-
         blob,
     }
 }
 
 mod errors {
     pub const CONN_NOT_AVAILABLE: &str = "connection not available";
-    pub const CONN_CONSUMED: &str = "transaction already consumed";
-    pub const TX_NOT_AVAILABLE: &str = "transaction not available";
-    pub const TX_CONSUMED: &str = "transaction already consumed";
+    pub const CONN_CONSUMED: &str = "connection already consumed";
 }
 
 struct ConnectionRef(Mutex<Option<libsql::Connection>>);
-struct TransactionRef(Mutex<Option<libsql::Transaction>>);
 struct StatementRef(Mutex<libsql::Statement>);
 struct CursorRef(Mutex<libsql::Rows>);
 
 impl Resource for ConnectionRef {}
-impl Resource for TransactionRef {}
 impl Resource for StatementRef {}
 impl Resource for CursorRef {}
 
@@ -54,26 +47,6 @@ pub enum DatabaseOpenMode {
 pub enum CursorResult {
     Continue(Vec<Vec<value::Value>>),
     Halt(Vec<Vec<value::Value>>),
-}
-
-#[derive(NifUnitEnum, Default)]
-pub enum TransactionBehavior {
-    #[default]
-    Deferred,
-    Immediate,
-    Exclusive,
-    ReadOnly,
-}
-
-impl From<TransactionBehavior> for libsql::TransactionBehavior {
-    fn from(behavior: TransactionBehavior) -> Self {
-        match behavior {
-            TransactionBehavior::Deferred => libsql::TransactionBehavior::Deferred,
-            TransactionBehavior::Immediate => libsql::TransactionBehavior::Immediate,
-            TransactionBehavior::Exclusive => libsql::TransactionBehavior::Exclusive,
-            TransactionBehavior::ReadOnly => libsql::TransactionBehavior::ReadOnly,
-        }
-    }
 }
 
 #[derive(NifRecord, Clone)]
@@ -99,12 +72,6 @@ struct Connection {
 }
 
 #[derive(NifStruct, Clone)]
-#[module = "ExLibSQL.Native.Transaction"]
-struct Transaction {
-    tx_ref: ResourceArc<TransactionRef>,
-}
-
-#[derive(NifStruct, Clone)]
 #[module = "ExLibSQL.Native.Statement"]
 struct Statement {
     stmt_ref: ResourceArc<StatementRef>,
@@ -118,7 +85,6 @@ struct Cursor {
 
 fn load(env: Env, _: Term) -> bool {
     env.register::<ConnectionRef>().is_ok()
-        && env.register::<TransactionRef>().is_ok()
         && env.register::<StatementRef>().is_ok()
         && env.register::<CursorRef>().is_ok()
 }
@@ -168,8 +134,8 @@ fn open(mode: DatabaseOpenMode) -> result::Result<Connection, String> {
 
 #[rustler::nif]
 fn execute(
-    resource: ResourceArc<ConnectionRef>,
-    stmt: String,
+    connection: ResourceArc<ConnectionRef>,
+    sql: String,
     params: Vec<value::Value>,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -177,21 +143,20 @@ fn execute(
         let mut local_env = OwnedEnv::new();
 
         let out: result::Result<Result, String> = async {
-            let lock = resource.0.lock().await;
+            let state = connection.0.lock().await;
 
-            let connection = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(CONN_NOT_AVAILABLE.to_string()),
-            };
+            let conn = state
+                .as_ref()
+                .ok_or_else(|| "No connection available".to_string())?;
 
-            let result = connection.execute(&stmt, params).await;
+            let result = conn.execute(&sql, params).await;
 
             match result {
                 Ok(num_rows) => Ok(Result {
                     num_rows: Some(num_rows.try_into().unwrap()),
                     rows: None,
                     columns: None,
-                    last_insert_id: Some(connection.last_insert_rowid()),
+                    last_insert_id: Some(conn.last_insert_rowid()),
                 }),
                 Err(err) => Err(err.to_string()),
             }
@@ -208,8 +173,8 @@ fn execute(
 
 #[rustler::nif]
 fn query(
-    resource: ResourceArc<ConnectionRef>,
-    stmt: String,
+    connection: ResourceArc<ConnectionRef>,
+    sql: String,
     params: Vec<value::Value>,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -217,19 +182,15 @@ fn query(
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<Result, String> = async {
-            let lock = resource.0.lock().await;
+            let state = connection.0.lock().await;
 
-            let transaction = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(CONN_NOT_AVAILABLE.to_string()),
-            };
+            let conn = state
+                .as_ref()
+                .ok_or_else(|| "No connection available".to_string())?;
 
-            let mut rows = transaction
-                .query(&stmt, params)
-                .await
-                .map_err(|e| e.to_string())?;
+            let mut rows = conn.query(&sql, params).await.map_err(|e| e.to_string())?;
+
             let column_count: usize = rows.column_count().try_into().unwrap();
-
             let mut columns = Vec::with_capacity(column_count);
             for idx in 0..column_count {
                 let name = rows.column_name(idx.try_into().unwrap()).unwrap_or("");
@@ -239,7 +200,7 @@ fn query(
             let mut data = Vec::new();
             while let Ok(Some(row)) = rows.next().await {
                 let mut row_data = Vec::with_capacity(columns.len());
-                for (idx, _) in columns.iter().enumerate() {
+                for idx in 0..column_count {
                     row_data.push(
                         row.get_value(idx as i32)
                             .map(|d| d.into())
@@ -249,13 +210,11 @@ fn query(
                 data.push(row_data);
             }
 
-            let last_insert_id = transaction.last_insert_rowid();
-
             Ok(Result {
                 num_rows: Some(data.len()),
                 rows: Some(data),
                 columns: Some(columns),
-                last_insert_id: Some(last_insert_id),
+                last_insert_id: Some(conn.last_insert_rowid()),
             })
         }
         .await;
@@ -269,103 +228,15 @@ fn query(
 }
 
 #[rustler::nif]
-fn begin(
-    resource: ResourceArc<ConnectionRef>,
-    behaviour: TransactionBehavior,
-    pid: LocalPid,
-) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let out: result::Result<Transaction, String> = async {
-            let lock = resource.0.lock().await;
-
-            let connection = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(CONN_NOT_AVAILABLE.to_string()),
-            };
-
-            let result = connection.transaction_with_behavior(behaviour.into()).await;
-
-            match result {
-                Ok(tx) => Ok(Transaction {
-                    tx_ref: ResourceArc::new(TransactionRef(Mutex::new(Some(tx)))),
-                }),
-                Err(err) => Err(err.to_string()),
-            }
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| out)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
-fn commit(resource: ResourceArc<TransactionRef>, pid: LocalPid) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let result: result::Result<(), String> = async {
-            let transaction = {
-                let mut lock = resource.0.lock().await;
-                lock.take().ok_or(TX_CONSUMED.to_string())?
-            };
-
-            match transaction.commit().await {
-                Ok(_) => Ok(()),
-                Err(err) => Err(err.to_string()),
-            }
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| result)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
-fn rollback(resource: ResourceArc<TransactionRef>, pid: LocalPid) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let result: result::Result<(), String> = async {
-            let transaction = {
-                let mut lock = resource.0.lock().await;
-                lock.take().ok_or(TX_CONSUMED.to_string())?
-            };
-
-            match transaction.rollback().await {
-                Ok(_) => Ok(()),
-                Err(err) => Err(err.to_string()),
-            }
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| result)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
-fn tx_status(resource: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
+fn tx_status(connection: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
         let out: result::Result<Atom, String> = async {
-            let lock = resource.0.lock().await;
+            let lock = connection.0.lock().await;
 
             let connection = match lock.as_ref() {
-                Some(tx) => tx,
+                Some(conn) => conn,
                 None => return Err(CONN_NOT_AVAILABLE.to_string()),
             };
 
@@ -385,168 +256,26 @@ fn tx_status(resource: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Res
 }
 
 #[rustler::nif]
-fn tx_execute(
-    resource: ResourceArc<TransactionRef>,
-    stmt: String,
-    params: Vec<value::Value>,
-    pid: LocalPid,
-) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let out: result::Result<Result, String> = async {
-            let lock = resource.0.lock().await;
-
-            let transaction = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(TX_NOT_AVAILABLE.to_string()),
-            };
-
-            let result = transaction.execute(&stmt, params).await;
-
-            match result {
-                Ok(num_rows) => Ok(Result {
-                    num_rows: Some(num_rows.try_into().unwrap()),
-                    rows: None,
-                    columns: None,
-                    last_insert_id: Some(transaction.last_insert_rowid()),
-                }),
-                Err(err) => Err(err.to_string()),
-            }
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| out)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
-fn tx_query(
-    resource: ResourceArc<TransactionRef>,
-    stmt: String,
-    params: Vec<value::Value>,
-    pid: LocalPid,
-) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let result: result::Result<Result, String> = async {
-            let lock = resource.0.lock().await;
-
-            let transaction = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(TX_NOT_AVAILABLE.to_string()),
-            };
-
-            let mut rows = transaction
-                .query(&stmt, params)
-                .await
-                .map_err(|e| e.to_string())?;
-            let column_count: usize = rows.column_count().try_into().unwrap();
-
-            let mut columns = Vec::with_capacity(column_count);
-            for idx in 0..column_count {
-                let name = rows.column_name(idx.try_into().unwrap()).unwrap_or("");
-                columns.push(name.to_string());
-            }
-
-            let mut data = Vec::new();
-            while let Ok(Some(row)) = rows.next().await {
-                let mut row_data = Vec::with_capacity(columns.len());
-                for (idx, _) in columns.iter().enumerate() {
-                    row_data.push(
-                        row.get_value(idx as i32)
-                            .map(|d| d.into())
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                data.push(row_data);
-            }
-
-            let last_insert_id = transaction.last_insert_rowid();
-
-            Ok(Result {
-                num_rows: Some(data.len()),
-                rows: Some(data),
-                columns: Some(columns),
-                last_insert_id: Some(last_insert_id),
-            })
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| result)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
-fn tx_prepare(
-    resource: ResourceArc<TransactionRef>,
-    stmt: String,
-    pid: LocalPid,
-) -> result::Result<(), String> {
-    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
-        let mut local_env = OwnedEnv::new();
-
-        let result: result::Result<Statement, String> = async {
-            let lock = resource.0.lock().await;
-
-            let transaction = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(TX_NOT_AVAILABLE.to_string()),
-            };
-
-            let statement = transaction
-                .prepare(&stmt)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            Ok(Statement {
-                stmt_ref: ResourceArc::new(StatementRef(Mutex::new(statement))),
-            })
-        }
-        .await;
-
-        local_env
-            .send_and_clear(&pid, |_| result)
-            .expect("to send message");
-    });
-
-    Ok(())
-}
-
-#[rustler::nif]
 fn prepare(
-    resource: ResourceArc<ConnectionRef>,
-    stmt: String,
+    connection: ResourceArc<ConnectionRef>,
+    sql: String,
     pid: LocalPid,
 ) -> result::Result<(), String> {
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
         let out: result::Result<Statement, String> = async {
-            let lock = resource.0.lock().await;
+            let state = connection.0.lock().await;
 
-            let connection = match lock.as_ref() {
-                Some(tx) => tx,
-                None => return Err(CONN_NOT_AVAILABLE.to_string()),
-            };
+            let conn = state
+                .as_ref()
+                .ok_or_else(|| "No connection available".to_string())?;
 
-            let result = connection.prepare(&stmt).await;
+            let statement = conn.prepare(&sql).await.map_err(|e| e.to_string())?;
 
-            match result {
-                Ok(statement) => Ok(Statement {
-                    stmt_ref: ResourceArc::new(StatementRef(Mutex::new(statement))),
-                }),
-                Err(err) => Err(err.to_string()),
-            }
+            Ok(Statement {
+                stmt_ref: ResourceArc::new(StatementRef(Mutex::new(statement))),
+            })
         }
         .await;
 
@@ -560,7 +289,8 @@ fn prepare(
 
 #[rustler::nif]
 fn stmt_execute(
-    resource: ResourceArc<StatementRef>,
+    connection: ResourceArc<ConnectionRef>,
+    statement: ResourceArc<StatementRef>,
     params: Vec<value::Value>,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -568,9 +298,10 @@ fn stmt_execute(
         let mut local_env = OwnedEnv::new();
 
         let out: result::Result<Result, String> = async {
-            let mut statement = resource.0.lock().await;
+            let _ = connection.0.lock().await;
+            let mut stmt = statement.0.lock().await;
 
-            let result = statement.execute(params).await;
+            let result = stmt.execute(params).await;
 
             match result {
                 Ok(num_rows) => Ok(Result {
@@ -594,7 +325,8 @@ fn stmt_execute(
 
 #[rustler::nif]
 fn stmt_query(
-    resource: ResourceArc<StatementRef>,
+    connection: ResourceArc<ConnectionRef>,
+    statement: ResourceArc<StatementRef>,
     params: Vec<value::Value>,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -602,9 +334,11 @@ fn stmt_query(
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<Result, String> = async {
-            let mut statement = resource.0.lock().await;
+            let _ = connection.0.lock().await;
+            let mut stmt = statement.0.lock().await;
 
-            let mut rows = statement.query(params).await.map_err(|e| e.to_string())?;
+            let mut rows = stmt.query(params).await.map_err(|e| e.to_string())?;
+
             let column_count: usize = rows.column_count().try_into().unwrap();
 
             let mut columns = Vec::with_capacity(column_count);
@@ -616,7 +350,7 @@ fn stmt_query(
             let mut data = Vec::new();
             while let Ok(Some(row)) = rows.next().await {
                 let mut row_data = Vec::with_capacity(columns.len());
-                for (idx, _) in columns.iter().enumerate() {
+                for idx in 0..column_count {
                     row_data.push(
                         row.get_value(idx as i32)
                             .map(|d| d.into())
@@ -644,8 +378,36 @@ fn stmt_query(
 }
 
 #[rustler::nif]
+fn stmt_reset(
+    connection: ResourceArc<ConnectionRef>,
+    statement: ResourceArc<StatementRef>,
+    pid: LocalPid,
+) -> result::Result<(), String> {
+    let _: tokio::task::JoinHandle<()> = task::spawn(async move {
+        let mut local_env = OwnedEnv::new();
+
+        let result: result::Result<(), String> = async {
+            let _ = connection.0.lock().await;
+            let mut stmt = statement.0.lock().await;
+
+            stmt.reset();
+
+            Ok(())
+        }
+        .await;
+
+        local_env
+            .send_and_clear(&pid, |_| result)
+            .expect("to send message");
+    });
+
+    Ok(())
+}
+
+#[rustler::nif]
 fn stmt_cursor(
-    resource: ResourceArc<StatementRef>,
+    connection: ResourceArc<ConnectionRef>,
+    statement: ResourceArc<StatementRef>,
     params: Vec<value::Value>,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -653,9 +415,10 @@ fn stmt_cursor(
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<Cursor, String> = async {
-            let mut statement = resource.0.lock().await;
+            let _ = connection.0.lock().await;
+            let mut stmt = statement.0.lock().await;
 
-            let rows = statement.query(params).await.map_err(|e| e.to_string())?;
+            let rows = stmt.query(params).await.map_err(|e| e.to_string())?;
 
             Ok(Cursor {
                 cur_ref: ResourceArc::new(CursorRef(Mutex::new(rows))),
@@ -673,7 +436,8 @@ fn stmt_cursor(
 
 #[rustler::nif]
 fn stmt_fetch(
-    resource: ResourceArc<CursorRef>,
+    connection: ResourceArc<ConnectionRef>,
+    cursor: ResourceArc<CursorRef>,
     amount: i64,
     pid: LocalPid,
 ) -> result::Result<(), String> {
@@ -681,7 +445,8 @@ fn stmt_fetch(
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<CursorResult, String> = async {
-            let mut cursor = resource.0.lock().await;
+            let _ = connection.0.lock().await;
+            let mut cursor = cursor.0.lock().await;
 
             let mut data = Vec::new();
             let mut has_more = true;
@@ -726,12 +491,17 @@ fn stmt_fetch(
 }
 
 #[rustler::nif]
-fn stmt_finalize(resource: ResourceArc<StatementRef>, pid: LocalPid) -> result::Result<(), String> {
+fn stmt_finalize(
+    connection: ResourceArc<ConnectionRef>,
+    statement: ResourceArc<StatementRef>,
+    pid: LocalPid,
+) -> result::Result<(), String> {
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
         let result: result::Result<(), String> = async {
-            let mut stmt = resource.0.lock().await;
+            let _ = connection.0.lock().await;
+            let mut stmt = statement.0.lock().await;
 
             stmt.finalize();
 
@@ -748,12 +518,12 @@ fn stmt_finalize(resource: ResourceArc<StatementRef>, pid: LocalPid) -> result::
 }
 
 #[rustler::nif]
-fn close(conn: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
+fn close(connection: ResourceArc<ConnectionRef>, pid: LocalPid) -> result::Result<(), String> {
     let _: tokio::task::JoinHandle<()> = task::spawn(async move {
         let mut local_env = OwnedEnv::new();
 
         let result = async {
-            let mut conn = conn.0.lock().await;
+            let mut conn = connection.0.lock().await;
             if let Some(connection) = conn.take() {
                 drop(connection);
                 Ok(())

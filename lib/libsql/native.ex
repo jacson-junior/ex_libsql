@@ -8,17 +8,12 @@ defmodule ExLibSQL.Native do
   def query(_conn, _sql, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
 
   def prepare(_conn, _sql, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def stmt_execute(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def stmt_query(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def stmt_finalize(_stmt, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def stmt_cursor(_stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def stmt_fetch(_cursor, _amount, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_execute(_conn, _stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_query(_conn, _stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_reset(_conn, _stmt, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_finalize(_conn, _stmt, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_cursor(_conn, _stmt, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def stmt_fetch(_conn, _cursor, _amount, _pid), do: :erlang.nif_error(:nif_not_loaded)
 
-  def begin(_conn, _behaviour, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def commit(_tx, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def rollback(_tx, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def tx_execute(_tx, _sql, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def tx_query(_tx, _sql, _params, _pid), do: :erlang.nif_error(:nif_not_loaded)
-  def tx_prepare(_tx, _sql, _pid), do: :erlang.nif_error(:nif_not_loaded)
   def tx_status(_conn, _pid), do: :erlang.nif_error(:nif_not_loaded)
 end
